@@ -7,6 +7,8 @@ import QuestionCard from '@/components/exam/QuestionCard';
 import QuestionNavigation from '@/components/exam/QuestionNavigation';
 import ExamCompletionCard from '@/components/exam/ExamCompletionCard';
 import { Question } from '@/types/exam';
+import { useQuery } from '@tanstack/react-query';
+import { Badge } from '@/components/ui/badge';
 
 // Sample questions data
 const questions: Question[] = [
@@ -79,12 +81,29 @@ const questions: Question[] = [
   }  
 ];
 
+const fetchExamStatus = async () => {
+  const response = await fetch('/api/exam_status');
+  if (!response.ok) throw new Error('Failed to fetch exam status');
+  return response.json();
+};
+
+const fetchCameraStatus = async () => {
+  const response = await fetch('/api/camera_status');
+  if (!response.ok) throw new Error('Failed to fetch camera status');
+  return response.json();
+};
+
 const Exam = () => {
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [selectedAnswers, setSelectedAnswers] = useState<number[]>(Array(questions.length).fill(-1));
   const [textAnswers, setTextAnswers] = useState<string[]>(Array(questions.length).fill(''));
   const [timeLeft, setTimeLeft] = useState(1800); // 30 minutes in seconds
   const [isExamSubmitted, setIsExamSubmitted] = useState(false);
+  const [isExamPaused, setIsExamPaused] = useState(false);
+  const [pauseReason, setPauseReason] = useState<string[]>([]);
+  const [cameraStatus, setCameraStatus] = useState<any>(null);
+  const [showWarning, setShowWarning] = useState(false);
+  const [warningMessage, setWarningMessage] = useState('');
   const navigate = useNavigate();
   const location = useLocation();
   
@@ -103,6 +122,104 @@ const Exam = () => {
       navigate('/');
     }
   }, [studentName, studentId, navigate]);
+
+  // Start camera detection when component mounts
+  useEffect(() => {
+    const startCameraDetection = async () => {
+      try {
+        const response = await fetch('/api/start_camera', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+        if (!response.ok) {
+          throw new Error('Failed to start camera detection');
+        }
+        console.log('Camera detection started');
+      } catch (error) {
+        console.error('Error starting camera detection:', error);
+      }
+    };
+
+    startCameraDetection();
+
+    // Cleanup function to stop camera detection
+    return () => {
+      const stopCameraDetection = async () => {
+        try {
+          await fetch('/api/stop_camera', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          });
+        } catch (error) {
+          console.error('Error stopping camera detection:', error);
+        }
+      };
+      stopCameraDetection();
+    };
+  }, []);
+
+  const { data: examStatus } = useQuery({
+    queryKey: ['examStatus'],
+    queryFn: fetchExamStatus,
+    refetchInterval: 1000, // Check status every second
+  });
+
+  const { data: cameraData } = useQuery({
+    queryKey: ['cameraStatus'],
+    queryFn: fetchCameraStatus,
+    refetchInterval: 1000,
+  });
+
+  useEffect(() => {
+    if (examStatus) {
+      setIsExamPaused(examStatus.is_paused);
+      setPauseReason(examStatus.pause_reason || []);
+    }
+  }, [examStatus]);
+
+  useEffect(() => {
+    if (cameraData) {
+      setCameraStatus(cameraData);
+    }
+  }, [cameraData]);
+
+  // Enhanced warning effect
+  useEffect(() => {
+    if (cameraStatus) {
+      const warnings = [];
+      if (cameraStatus.voice_detected) {
+        warnings.push('Voice detected! Please stop talking during the exam.');
+      }
+      if (cameraStatus.phone_detected) {
+        warnings.push('Mobile device detected! Please put away your phone.');
+      }
+      if (cameraStatus.looking_away) {
+        warnings.push('Please maintain eye contact with the screen.');
+      }
+      if (cameraStatus.face_detected === false) {
+        warnings.push('Face not detected! Please ensure you are visible to the camera.');
+      }
+
+      if (warnings.length > 0) {
+        setWarningMessage(warnings.join('\n'));
+        setShowWarning(true);
+        
+        // Show toast notification
+        toast({
+          title: "Warning",
+          description: warnings.join('\n'),
+          variant: "destructive",
+          duration: 5000,
+        });
+      } else {
+        setShowWarning(false);
+      }
+    }
+  }, [cameraStatus]);
 
   // Calculate if current question is the last one
   const isLastQuestion = currentQuestion === questions.length - 1;
@@ -193,21 +310,97 @@ const Exam = () => {
     }
   };
 
-  return (
-    <div className="min-h-screen bg-[#111827] text-white">
-      <ExamHeader 
-        studentName={studentName}
-        studentId={studentId}
-        onCameraError={handleCameraError}
-      />
-      
-      <ExamProgressBar 
-        currentQuestion={currentQuestion}
-        totalQuestions={questions.length}
-        timeLeft={timeLeft}
-      />
+  if (isExamPaused) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="max-w-md w-full p-6 bg-white rounded-lg shadow-lg">
+          <h2 className="text-2xl font-bold text-red-600 mb-4">Exam Paused</h2>
+          <p className="text-gray-700 mb-4">
+            Your exam has been paused due to suspicious activity. Please wait for the administrator to review the situation.
+          </p>
+          <div className="mb-4">
+            <h3 className="font-semibold mb-2">Reasons for pausing:</h3>
+            <ul className="list-disc list-inside">
+              {pauseReason.map((reason, index) => (
+                <li key={index} className="text-gray-600">{reason}</li>
+              ))}
+            </ul>
+          </div>
+          <p className="text-sm text-gray-500">
+            The exam will resume once the administrator approves. Please remain in your seat and wait for further instructions.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
+  return (
+    <div className="min-h-screen bg-gray-100">
       <div className="container mx-auto px-4 py-8">
+        {/* Enhanced Warning Banner */}
+        {showWarning && (
+          <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg shadow-lg">
+            <div className="flex items-center">
+              <svg className="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <div>
+                <h3 className="font-bold">Warning!</h3>
+                <p className="whitespace-pre-line">{warningMessage}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Camera Status Banner */}
+        {cameraStatus && (
+          <div className="mb-4 p-4 bg-white rounded-lg shadow">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center">
+                  <span className="mr-2">Face Detection:</span>
+                  <Badge variant={cameraStatus.face_detected ? 'default' : 'destructive'}>
+                    {cameraStatus.face_detected ? 'Active' : 'Inactive'}
+                  </Badge>
+                </div>
+                <div className="flex items-center">
+                  <span className="mr-2">Eye Contact:</span>
+                  <Badge variant={cameraStatus.looking_away ? 'destructive' : 'default'}>
+                    {cameraStatus.looking_away ? 'Looking Away' : 'Maintained'}
+                  </Badge>
+                </div>
+                <div className="flex items-center">
+                  <span className="mr-2">Voice Detection:</span>
+                  <Badge variant={cameraStatus.voice_detected ? 'destructive' : 'default'}>
+                    {cameraStatus.voice_detected ? 'Voice Detected' : 'No Voice'}
+                  </Badge>
+                </div>
+                <div className="flex items-center">
+                  <span className="mr-2">Phone Detection:</span>
+                  <Badge variant={cameraStatus.phone_detected ? 'destructive' : 'default'}>
+                    {cameraStatus.phone_detected ? 'Phone Detected' : 'No Phone'}
+                  </Badge>
+                </div>
+              </div>
+              <div className="text-sm text-gray-500">
+                {cameraStatus.suspicious_events_count} suspicious events detected
+              </div>
+            </div>
+          </div>
+        )}
+
+        <ExamHeader 
+          studentName={studentName}
+          studentId={studentId}
+          onCameraError={handleCameraError}
+        />
+        
+        <ExamProgressBar 
+          currentQuestion={currentQuestion}
+          totalQuestions={questions.length}
+          timeLeft={timeLeft}
+        />
+
         {isExamSubmitted ? (
           <ExamCompletionCard 
             totalQuestions={questions.length}

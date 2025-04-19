@@ -19,6 +19,8 @@ from network_lockdown import NetworkLockdown
 from peripheral_detector import PeripheralDetector
 import face_detector
 from voice_detector import VoiceDetector
+from cheating_detector import CheatingDetector
+from camera_detector import CameraDetector
 
 # Configure paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,12 +47,45 @@ if os.path.exists(FRONTEND_DIST):
     if os.path.exists(os.path.join(FRONTEND_DIST, 'assets')):
         print("Files in assets:", os.listdir(os.path.join(FRONTEND_DIST, 'assets')))
 
+# Initialize cheating detector
+cheating_detector = CheatingDetector()
+
+# Initialize camera detector
+camera_detector = CameraDetector()
+
+# Global state for exam status
+exam_status = {
+    'is_paused': False,
+    'pause_reason': None,
+    'last_activity': None
+}
+
 # Event callbacks
 def mouse_event_callback(event):
     logging.info(f"Mouse Event: {event}")
+    # Add cheating detection for mouse events
+    detection_data = {
+        'mouse_events': [event],
+        'timestamp': datetime.now().isoformat()
+    }
+    detection_result = cheating_detector.detect_cheating(detection_data)
+    if detection_result['should_pause']:
+        exam_status['is_paused'] = True
+        exam_status['pause_reason'] = detection_result['reasons']
+        exam_status['last_activity'] = datetime.now().isoformat()
 
 def window_event_callback(event):
     logging.info(f"Window Event: {event}")
+    # Add cheating detection for window events
+    detection_data = {
+        'window_events': [event],
+        'timestamp': datetime.now().isoformat()
+    }
+    detection_result = cheating_detector.detect_cheating(detection_data)
+    if detection_result['should_pause']:
+        exam_status['is_paused'] = True
+        exam_status['pause_reason'] = detection_result['reasons']
+        exam_status['last_activity'] = datetime.now().isoformat()
 
 def copy_event_callback(event):
     logging.info(f"Copy Event: {event}")
@@ -192,6 +227,111 @@ def test_voice_detection():
 @app.route('/api/voice_events')
 def voice_events():
     return jsonify(voice_detector.event_log)
+
+@app.route('/api/camera_status', methods=['GET'])
+def get_camera_status():
+    """Get current camera detection status"""
+    return jsonify(camera_detector.get_current_status())
+
+@app.route('/api/camera_events', methods=['GET'])
+def get_camera_events():
+    """Get all camera-based suspicious events"""
+    return jsonify(camera_detector.get_suspicious_events())
+
+@app.route('/api/start_camera', methods=['POST'])
+def start_camera():
+    """Start camera detection"""
+    try:
+        camera_detector.start_detection()
+        return jsonify({
+            'success': True,
+            'message': 'Camera detection started'
+        })
+    except Exception as e:
+        logging.error(f"Error starting camera: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/stop_camera', methods=['POST'])
+def stop_camera():
+    """Stop camera detection"""
+    try:
+        camera_detector.stop_detection()
+        return jsonify({
+            'success': True,
+            'message': 'Camera detection stopped'
+        })
+    except Exception as e:
+        logging.error(f"Error stopping camera: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/cheating_detection', methods=['POST'])
+def cheating_detection():
+    """Endpoint for cheating detection"""
+    try:
+        data = request.json
+        detection_result = cheating_detector.detect_cheating(data)
+        
+        # Get camera status
+        camera_status = camera_detector.get_current_status()
+        camera_events = camera_detector.get_suspicious_events()
+        
+        # Combine detection results
+        combined_result = {
+            'is_cheating': detection_result['is_cheating'] or len(camera_events) > 0,
+            'confidence': max(detection_result['confidence'], 0.8 if len(camera_events) > 0 else 0),
+            'reasons': detection_result['reasons'] + [event['event_type'] for event in camera_events[-5:]],  # Last 5 events
+            'should_pause': detection_result['should_pause'] or len(camera_events) >= 3  # Pause if 3 or more camera events
+        }
+        
+        if combined_result['should_pause']:
+            exam_status['is_paused'] = True
+            exam_status['pause_reason'] = combined_result['reasons']
+            exam_status['last_activity'] = datetime.now().isoformat()
+        
+        return jsonify({
+            'success': True,
+            'detection_result': combined_result,
+            'camera_status': camera_status,
+            'exam_status': exam_status
+        })
+    except Exception as e:
+        logging.error(f"Error in cheating detection: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/exam_status', methods=['GET'])
+def get_exam_status():
+    """Get current exam status"""
+    return jsonify(exam_status)
+
+@app.route('/api/resume_exam', methods=['POST'])
+def resume_exam():
+    """Resume the exam after admin approval"""
+    if not exam_status['is_paused']:
+        return jsonify({
+            'success': False,
+            'message': 'Exam is not paused'
+        }), 400
+    
+    exam_status['is_paused'] = False
+    exam_status['pause_reason'] = None
+    return jsonify({
+        'success': True,
+        'message': 'Exam resumed successfully'
+    })
+
+@app.route('/api/suspicious_activities', methods=['GET'])
+def get_suspicious_activities():
+    """Get list of all suspicious activities"""
+    return jsonify(cheating_detector.get_suspicious_activities())
 
 # Fallback route for SPA client-side routing
 # Replace the existing catch_all route with this simplified version
